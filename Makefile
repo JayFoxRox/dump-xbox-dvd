@@ -1,4 +1,24 @@
-BINARY := FreeCell.exe
+BINARY := freecell
+EXEFLAGS :=
+ARCH := linux
+CRCLIB := crcutil.a -Icrcutil-1.0/code -Icrcutil-1.0/examples
+CRC := crcutil-1.0 crcutil.a
+STRIPARG := -s
+
+ifeq ($(OS), Windows_NT)
+  BINARY := FreeCell.exe
+  EXEFLAGS := -static
+  ARCH := windows
+else
+  ifeq ($(shell uname -s), Darwin)
+    EXEFLAGS := -framework IOKit -framework CoreFoundation
+    ARCH := macosx
+    CRCLIB := crc32.c
+    CRC := crc32.c crc32.h
+    STRIPARG :=
+  endif
+endif
+
 DISTNAME := $(shell pwd | awk -F '/' '{print $$(NF - 1)}')
 ZIPNAME := $(shell pwd | awk -F '/' '{print $$(NF - 1)}' | tr "A-Z" "a-z").zip
 
@@ -8,7 +28,7 @@ all:
 
 .PHONY: clean
 clean:
-	rm -rf $(BINARY) crcutil.a *.o
+	rm -rf freecell FreeCell.exe crcutil.a *.o
 
 .PHONY: dist
 dist:
@@ -21,9 +41,9 @@ dist:
 	(cd ../.. ; zip -r $(ZIPNAME) $(DISTNAME))
 	mv ../../$(ZIPNAME) ../$(ZIPNAME)
 
-$(BINARY): main.cc md5.c md5.h sha1.c sha1.h crcutil-1.0 crcutil.a
-	g++ -O3 -Wall -Werror -o $@ -static main.cc md5.c sha1.c crcutil.a -Icrcutil-1.0/code -Icrcutil-1.0/examples
-	strip -s $@
+$(BINARY): main.cc $(ARCH).c $(ARCH).h md5.c md5.h sha1.c sha1.h $(CRC)
+	g++ -O3 -Wall -Werror -o $@ $(EXEFLAGS) main.cc $(ARCH).c md5.c sha1.c $(CRCLIB)
+	strip $(STRIPARG) $@
 
 crcutil.a: crcutil-1.0
 	rm -rf *.o

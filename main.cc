@@ -31,17 +31,26 @@
 
 // Usage: FreeCell <DRIVE> [-n|-o OUTPUTFILE] [SECTORFILE]
 
+#include <stddef.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <tchar.h>
-#include <time.h>
 #include <unistd.h>
-#include <windows.h>
 
+#if defined(_WIN32)
+#include "windows.h"
+#elif defined(__APPLE__)
+#include "macosx.h"
+#include "crc32.h"
+#else
+#include "linux.h"
+#endif
+
+#ifndef __APPLE__
 #include "interface.h"
+#endif
 #include "md5.h"
 #include "sha1.h"
 
@@ -66,33 +75,6 @@
 #define MODE_XTREME 1
 #define MODE_WXRIPPER 2
 
-#define SCSI_IOCTL_DATA_OUT 0
-#define SCSI_IOCTL_DATA_IN 1
-#define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x0004D014
-#define SENSE_BUFFER_LENGTH 32
-
-typedef struct _SCSI_PASS_THROUGH_DIRECT {
-  USHORT Length;
-  UCHAR  ScsiStatus;
-  UCHAR  PathId;
-  UCHAR  TargetId;
-  UCHAR  Lun;
-  UCHAR  CdbLength;
-  UCHAR  SenseInfoLength;
-  UCHAR  DataIn;
-  ULONG  DataTransferLength;
-  ULONG  TimeOutValue;
-  PVOID  DataBuffer;
-  ULONG  SenseInfoOffset;
-  UCHAR  Cdb[16];
-} SCSI_PASS_THROUGH_DIRECT, *PSCSI_PASS_THROUGH_DIRECT;
-
-typedef struct _SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER {
-  SCSI_PASS_THROUGH_DIRECT sptd;
-  ULONG	Filler;
-  UCHAR	ucSenseBuf[SENSE_BUFFER_LENGTH];
-} SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER, *PSCSI_PASS_THROUGH_DIRECT_WITH_BUFFER;
-  
 typedef struct {
   unsigned int start;
   unsigned int end;
@@ -103,36 +85,35 @@ typedef struct {
   size_t l1;
 } layersize_t;
 
-char drive;
-HANDLE drivehandle;
-
 const char *outputfile;
 int fd;
 
 sectorrange_t *securitysectors;
 int sectorranges;
 
+#ifndef __APPLE__
 crcutil_interface::CRC *crcutil;
 unsigned long long crc;
+#else
+CRC32_CTX crc32context;
+unsigned int crc;
+#endif
 
 MD5_CTX md5context;
 SHA1_CTX sha1context;
 
 int readsectorfile(const char *);
-HANDLE opendrivehandle();
 int digesttostr(char *, const unsigned char *, size_t);
 void usage();
 int freecell();
 void printprogress(unsigned int, unsigned int);
 unsigned int getnextgap(unsigned int);
 unsigned int getgapsize(unsigned int);
-UINT64 millisecondstime();
 int setlockingmode(unsigned char);
 int getlayersizes(layersize_t *);
 int setstreaming();
 int readblock(unsigned char *, unsigned int, size_t);
 int processblock(const unsigned char *, size_t);
-int sendcdb(const unsigned char *, unsigned char, unsigned char *, size_t, int, unsigned int *);
 
 int main(int argc, char *argv[]) {
   int option, nooutput, ret;
@@ -144,22 +125,21 @@ int main(int argc, char *argv[]) {
 
   fd = 0;
   nooutput = 0;
-  drive = 0;
   outputfile = NULL;
   sectorfile = NULL;
-  
+
   while ((option = getopt(argc, argv, "no:h?")) != -1) {
     switch (option) {
       case 'n':
         if (outputfile) {
-          fprintf(stderr, "FreeCell.exe: -n option can not be used together with -o\n");
+          fprintf(stderr, EXECUTABLE ": -n option can not be used together with -o\n");
           return 1;
         }
         nooutput = 1;
         break;
       case 'o':
         if (nooutput) {
-          fprintf(stderr, "FreeCell.exe: -p option can not be used together with -n\n");
+          fprintf(stderr, EXECUTABLE ": -p option can not be used together with -n\n");
           return 1;
         }
         outputfile = optarg;
@@ -177,17 +157,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   
-  do {
-    if (strlen(argv[optind]) > 2) break;
-    if (strlen(argv[optind]) == 2 && argv[optind][1] != ':') break;
-    if (argv[optind][0] < 'A' || argv[optind][0] > 'z') break;
-    if (argv[optind][0] > 'Z' && argv[optind][0] < 'a') break;
-    drive = argv[optind][0];
-    if (drive > 'Z') drive -= ('a' - 'A');
-  } while (0);    
-
-  if (!drive) {
-    fprintf(stderr, "FreeCell.exe: %s does not look like a valid drive\n", argv[optind]);
+  if (getdrive(argv[optind])) {
+    fprintf(stderr, EXECUTABLE ": %s does not look like a valid drive\n", argv[optind]);
     return 1;
   }
   optind++;
@@ -201,27 +172,33 @@ int main(int argc, char *argv[]) {
 
   if (readsectorfile(sectorfile)) return 1;
 
-  if ((drivehandle = opendrivehandle()) == INVALID_HANDLE_VALUE) {
-    fprintf(stderr, "Could not open drive %c:.\n", drive);
+  if (opendrive()) {
     if (securitysectors != NULL) free(securitysectors);
     return 1;
   }
 
   if ((outputfile != NULL) && ((fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, S_IRUSR | S_IWUSR)) == -1)) {
     perror(outputfile);
-    CloseHandle(drivehandle);
+    closedrive();
     if (securitysectors != NULL) free(securitysectors);
     return 1;
   }
 
+#ifndef __APPLE__
   crcutil = crcutil_interface::CRC::Create(POLY, 0, 32, true, 0, 0, 0, 0, NULL);
   crc = 0;
+#else
+  CRC32_Init(&crc32context);
+#endif
   MD5_Init(&md5context);
   SHA1_Init(&sha1context);
 
   ret = freecell();
 
   if (!ret) {
+#ifdef __APPLE__
+    CRC32_Final(&crc, &crc32context);
+#endif
     MD5_Final(md5digest, &md5context);
     SHA1_Final(sha1digest, &sha1context);
 
@@ -233,9 +210,11 @@ int main(int argc, char *argv[]) {
     printf("SHA1:  %s\n", sha1hash);
   }
 
+#ifndef __APPLE__
   crcutil->Delete();
+#endif
   if (fd) close(fd);
-  CloseHandle(drivehandle);
+  closedrive();
   if (securitysectors != NULL) free(securitysectors);
 
   return ret;
@@ -303,7 +282,7 @@ int readsectorfile(const char *sectorfile) {
       state = STATE_ERROR;
       break;
     }
-    
+
     if (state == STATE_SECONDVALUE) {
       if (byte == ' ') continue;
       if (byte >= '1' && byte <= '9') {
@@ -363,24 +342,6 @@ int readsectorfile(const char *sectorfile) {
   return 0;
 }
 
-HANDLE opendrivehandle() {
-  LPTSTR drivepath;
-
-  if((drivepath = (LPTSTR)calloc(sizeof("\\\\.\\.:"), sizeof(TCHAR))) == NULL) {
-    fprintf(stderr, "Drivepath calloc failed. Out of memory?\n");
-    return INVALID_HANDLE_VALUE;
-  }
-  _stprintf(drivepath, _T("\\\\.\\%c:"), drive);
-  return CreateFile(drivepath,
-                     GENERIC_READ | GENERIC_WRITE,
-                     FILE_SHARE_READ | FILE_SHARE_WRITE,
-                     NULL,
-                     OPEN_EXISTING,
-                     FILE_ATTRIBUTE_NORMAL,
-                     NULL
-                    );
-}
-
 int digesttostr(char *hash, const unsigned char *digest, size_t length) {
   unsigned int i;
 
@@ -397,7 +358,7 @@ int digesttostr(char *hash, const unsigned char *digest, size_t length) {
 
 void usage() {
   fprintf(stderr, "\n");
-  fprintf(stderr, "Usage: FreeCell <DRIVE> [-n|-o OUTPUTFILE] [SECTORFILE]\n");
+  fprintf(stderr, "Usage: " PROGRAMNAME " " DRIVEUSAGE " [-n|-o OUTPUTFILE] [SECTORFILE]\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Dumps an XGD from a compatible drive, padding sectors in SECTORFILE.\n");
   fprintf(stderr, "The resulting OUTPUTFILE will include all video layers data.\n");
@@ -412,9 +373,9 @@ void usage() {
 }
 
 int freecell() {
-  size_t l0_video, l1_video, middlezone, gamedata;
+  size_t l0_video, l1_video, middlezone, gamedata, totalsize;
   layersize_t layers;
-  unsigned int totalsize, offset, sectorsdone, nextgap, gapsize;
+  unsigned int offset, sectorsdone, nextgap, gapsize;
   unsigned char buffer[BUFFERSIZE];
 
   if (setlockingmode(MODE_LOCKED)) return 1;
@@ -437,13 +398,13 @@ int freecell() {
   totalsize = l0_video + l1_video + (2 * middlezone) + gamedata;
 
   printf("\n");
-  printf("L0 Video Size: %d\n", l0_video);
-  printf("L1 Video Size: %d\n", l1_video);
-  printf("Middle Zone Size: %d\n", middlezone);
-  printf("Game Data Size: %d\n", gamedata);
-  printf("Total Size: %d\n", totalsize);
+  printf("L0 Video Size: " SIZE_T_FORMAT "\n", l0_video);
+  printf("L1 Video Size: " SIZE_T_FORMAT "\n", l1_video);
+  printf("Middle Zone Size: " SIZE_T_FORMAT "\n", middlezone);
+  printf("Game Data Size: " SIZE_T_FORMAT "\n", gamedata);
+  printf("Total Size: " SIZE_T_FORMAT "\n", totalsize);
   printf("\n");
-  printf("Real Layer Break: %d\n", l0_video + middlezone + (gamedata / 2));
+  printf("Real Layer Break: " SIZE_T_FORMAT "\n", l0_video + middlezone + (gamedata / 2));
   printf("\n");
   fflush(stdout);
 
@@ -469,12 +430,27 @@ int freecell() {
   }
 
   // Middle Zone A
+  memset(buffer, 0, BUFFERSIZE);
+  while ((offset + SECTORS) < (l0_video + middlezone)) {
+    if (processblock(buffer, BUFFERSIZE)) return 1;
+    sectorsdone += SECTORS;
+    offset += SECTORS;
+    printprogress(totalsize, sectorsdone);
+  }
+  if (offset < (l0_video + middlezone)) {
+    if (processblock(buffer, ((l0_video + middlezone) - offset) * SECTORSIZE)) return 1;
+    sectorsdone += (l0_video + middlezone) - offset;
+    offset += (l0_video + middlezone) - offset;
+    printprogress(totalsize, sectorsdone);
+  }
+
+/*
   while ((offset + SECTORS) < (l0_video + middlezone)) {
     if (readblock(buffer, offset, BUFFERSIZE)) return 1;
-    if ((buffer[0] != 0) || memcmp(buffer, buffer + 1, BUFFERSIZE - 1)) {
-      fprintf(stderr, "Error: Data found in Middle Zone A! Report this as soon as possible please!\n");
-      return 1;
-    }
+//    if ((buffer[0] != 0) || memcmp(buffer, buffer + 1, BUFFERSIZE - 1)) {
+//      fprintf(stderr, "Error: Data found in Middle Zone A! Report this as soon as possible please!\n");
+//      return 1;
+//    }
     if (processblock(buffer, BUFFERSIZE)) return 1;
     sectorsdone += SECTORS;
     offset += SECTORS;
@@ -491,6 +467,7 @@ int freecell() {
     offset += (l0_video + middlezone) - offset;
     printprogress(totalsize, sectorsdone);
   }
+*/
 
   // Game Data
   while (offset < (l0_video + middlezone + gamedata)) {
@@ -609,9 +586,9 @@ unsigned int getgapsize(unsigned int gap) {
 }
 
 void printprogress(unsigned int totalsize, unsigned int sectorsdone) {
-  static UINT64 starttime = millisecondstime();
-  static UINT64 lastupdate = starttime;
-  UINT64 currenttime = millisecondstime();
+  static unsigned long long starttime = millisecondstime();
+  static unsigned long long lastupdate = starttime;
+  unsigned long long currenttime = millisecondstime();
   static unsigned int rate = 0;
   static unsigned int ratedivisor = 0;
 
@@ -627,13 +604,6 @@ void printprogress(unsigned int totalsize, unsigned int sectorsdone) {
   }
   printf(")   \r");
   fflush(stdout);
-}
-
-UINT64 millisecondstime() {
-  SYSTEMTIME currenttime;
-  time_t unixtime = time(NULL);
-  GetSystemTime(&currenttime);
-  return ((unixtime * 1000) + currenttime.wMilliseconds);
 }
 
 int setlockingmode(unsigned char mode) {
@@ -767,7 +737,11 @@ int readblock(unsigned char *buffer, unsigned int offset, size_t size) {
 }
 
 int processblock(const unsigned char *buffer, size_t size) {
+#ifndef __APPLE__
   crcutil->Compute(buffer, size, &crc);
+#else
+  CRC32_Update(&crc32context, buffer, size);
+#endif
   MD5_Update(&md5context, buffer, size);
   SHA1_Update(&sha1context, buffer, size);
 
@@ -776,40 +750,5 @@ int processblock(const unsigned char *buffer, size_t size) {
     return 1;
   }
 
-  return 0;
-}
-
-int sendcdb(const unsigned char *cdb, unsigned char cdblength, unsigned char *buffer, size_t size, int in, unsigned int *sense) {
-  SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER sptdwb;
-  long unsigned int returned;
-
-  memset(&sptdwb, 0, sizeof(SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER));
-  memset(buffer, 0, size);
-
-  sptdwb.sptd.Length = sizeof(SCSI_PASS_THROUGH_DIRECT);
-  sptdwb.sptd.CdbLength = cdblength;
-  sptdwb.sptd.SenseInfoLength = sizeof(sptdwb.ucSenseBuf);
-  sptdwb.sptd.DataIn = (in ? SCSI_IOCTL_DATA_IN : SCSI_IOCTL_DATA_OUT);
-  sptdwb.sptd.DataTransferLength = size;
-  sptdwb.sptd.TimeOutValue = 20;
-  sptdwb.sptd.DataBuffer = buffer;
-  sptdwb.sptd.SenseInfoOffset = offsetof(SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER, ucSenseBuf);
-
-  memcpy(sptdwb.sptd.Cdb, cdb, cdblength);
-
-  if (!DeviceIoControl(drivehandle,
-                       IOCTL_SCSI_PASS_THROUGH_DIRECT,
-                       &sptdwb,
-                       sizeof(SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER),
-                       &sptdwb,
-                       sizeof(SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER),
-                       &returned,
-                       NULL
-                      )) {
-     *sense = 1;
-     return 1;
-  }
-
-  *sense = ((sptdwb.ucSenseBuf[2] & 0x0f) << 16) + (sptdwb.ucSenseBuf[12] << 8) + sptdwb.ucSenseBuf[13];
   return 0;
 }
