@@ -7,7 +7,11 @@
 #include <assert.h>
 #include <inttypes.h>
 
+#ifdef WIN32
+#include <winsock2.h>
+#else
 #include <arpa/inet.h>
+#endif
 #include <stdint.h>
 #include <stddef.h>
 #include <fcntl.h>

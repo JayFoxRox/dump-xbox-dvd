@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 typedef enum {
-  Unknown,
+  UnknownType,
   Xbox,
   Xbox360,
   Xbox360_XGD3
