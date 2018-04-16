@@ -19,3 +19,6 @@ include_directories(SYSTEM ${ZLIB_INCLUDE_DIRS})
 
 add_executable(dump-xbox-dvd main.c ${ARCH}.c platform.h ss.c ss.h scsi.c scsi.h md5.c md5.h sha1.c sha1.h crc32.c crc32.h)
 target_link_libraries(dump-xbox-dvd ${ZLIB_LIBRARIES})
+if(WIN32)
+  target_link_libraries(dump-xbox-dvd wsock32 ws2_32)
+endif()

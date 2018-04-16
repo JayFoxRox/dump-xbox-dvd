@@ -66,7 +66,7 @@ SSType get_ss_type(const uint8_t* ss) {
   case 0x238E0F: return Xbox360_XGD3;
   default: break;
   }
-  return Unknown;
+  return UnknownType;
 }
 
 
